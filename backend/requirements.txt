@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+river
+kafka-python
+redis
+pydantic
+python-dotenv

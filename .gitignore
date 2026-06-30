@@ -1,0 +1,20 @@
+# Python
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+*.pyc
+.env
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+
+# Data
+backend/data/*.csv
+backend/data/*.zip
+
+# OS / IDE
+.vscode/
+.idea/
+.DS_Store
