@@ -11,8 +11,7 @@ frontend/dist/
 frontend/build/
 
 # Data
-backend/data/*.csv
-backend/data/*.zip
+backend/data/
 
 # OS / IDE
 .vscode/

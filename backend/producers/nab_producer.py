@@ -13,7 +13,6 @@ from pathlib import Path
 
 from kafka import KafkaProducer
 from kafka.errors import KafkaTimeoutError
-from kafka.serializer import JsonSerializer
 
 TOPIC = "financial-stream"
 BOOTSTRAP_SERVERS = ["localhost:9092"]
@@ -70,7 +69,7 @@ def build_producer():
         return KafkaProducer(
             bootstrap_servers=BOOTSTRAP_SERVERS,
             acks=1,
-            value_serializer=JsonSerializer(),
+            value_serializer=lambda value: json.dumps(value).encode("utf-8"),
         )
     except KafkaTimeoutError:
         print(
