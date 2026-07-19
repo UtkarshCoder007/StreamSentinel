@@ -18,6 +18,7 @@ import redis as redis_lib
 from kafka import KafkaConsumer
 from river.anomaly import HalfSpaceTrees
 from river import metrics
+from river.drift import ADWIN
 
 # ── Config ────────────────────────────────────────────────────────────────────
 TOPIC = "financial-stream"
@@ -31,6 +32,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
+logging.getLogger("kafka").setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
 
@@ -105,7 +107,8 @@ def build_redis() -> redis_lib.Redis:
 def flush_redis_keys(r: redis_lib.Redis, stream_id: str):
     latest_key = f"stream:{stream_id}:latest"
     history_key = f"stream:{stream_id}:history"
-    deleted = r.delete(latest_key, history_key)
+    drift_key = f"stream:{stream_id}:drift_events"
+    deleted = r.delete(latest_key, history_key, drift_key)
     log.info(f"Flushed {deleted} Redis key(s) for stream '{stream_id}'.")
 
 
@@ -130,6 +133,19 @@ def patch_and_update_latest(
     r.set(f"stream:{stream_id}:latest", json.dumps(result))
 
 
+def write_drift_event(r: redis_lib.Redis, stream_id: str, event: dict):
+    drift_key = f"stream:{stream_id}:drift_events"
+    pipe = r.pipeline()
+    pipe.lpush(drift_key, json.dumps(event))
+    pipe.ltrim(drift_key, 0, 49)
+    pipe.execute()
+    log.warning(
+        f"DRIFT DETECTED — trigger_score={event['trigger_score']} "
+        f"window_size={event['adwin_window_size']} "
+        f"at message #{event['message_count']}"
+    )
+
+
 # ── Main loop ─────────────────────────────────────────────────────────────────
 def run(args):
     anomaly_timestamps = load_labels(args.labels, args.stream_id)
@@ -138,7 +154,13 @@ def run(args):
         f"Labels: {'loaded ' + str(len(anomaly_timestamps)) + ' anomaly timestamp(s)' if has_labels else 'none — ROCAUC disabled'}"
     )
 
-    model = HalfSpaceTrees(seed=42)
+    model = HalfSpaceTrees(
+        seed=42,
+        window_size=250,
+        limits={"value": (0, 100)}
+    )
+    adwin = ADWIN()
+    drift_count = 0
     rocauc = metrics.ROCAUC() if has_labels else None
     running_rocauc = None
 
@@ -159,6 +181,7 @@ def run(args):
         log.info("Seeking to the beginning of the topic so replayed messages are processed.")
 
     processed = 0
+    warmup_done = False
 
     try:
         while True:
@@ -169,8 +192,6 @@ def run(args):
             for tp, messages in records.items():
                 for kafka_msg in messages:
 
-                    log.debug(f"Fetched raw message from partition {tp.partition} at offset {kafka_msg.offset}")
-
                     # ── Decode ────────────────────────────────────────────
                     msg = kafka_msg.value
                     if msg is None:
@@ -180,8 +201,8 @@ def run(args):
                     # ── Filter by stream_id ───────────────────────────────
                     if msg.get("stream_id") != args.stream_id:
                         log.warning(
-                            f"Skipping message: Topic stream_id '{msg.get('stream_id')}' "
-                            f"does not match expected target '{args.stream_id}'"
+                            f"Skipping message: stream_id '{msg.get('stream_id')}' "
+                            f"does not match target '{args.stream_id}'"
                         )
                         consumer.commit()
                         continue
@@ -201,6 +222,40 @@ def run(args):
                     # ── learn_one() → t_learned ───────────────────────────
                     model.learn_one(features)
                     t_learned = time.monotonic()
+
+                    # ── ADWIN drift detection ─────────────────────────────
+                    # Don't feed ADWIN during HST warmup — the 0.0 → non-zero
+                    # transition looks like drift but is just the model initialising.
+                    if not warmup_done and processed >= 250:
+                        warmup_done = True
+                        adwin = ADWIN()  # fresh ADWIN, discards warmup signal
+                        log.info("HST warmup complete — ADWIN now active.")
+
+                    drift_detected = False
+                    if warmup_done:
+                        adwin.update(anomaly_score)
+                        drift_detected = adwin.drift_detected
+
+                    if drift_detected:
+                        drift_count += 1
+                        drift_event = {
+                            "detected_at": datetime.now(timezone.utc).isoformat(),
+                            "trigger_score": round(anomaly_score, 6),
+                            "adwin_window_size": adwin.width,
+                            "message_count": processed + 1,
+                        }
+                        write_drift_event(r, args.stream_id, drift_event)
+                        # Reset model and metric — old distribution no longer valid
+                        model = HalfSpaceTrees(
+                            seed=42,
+                            window_size=250,
+                            limits={"value": (0, 100)}
+                        )
+                        rocauc = metrics.ROCAUC() if has_labels else None
+                        running_rocauc = None
+                        warmup_done = False  # new model needs its own warmup
+                        adwin = ADWIN()      # fresh ADWIN for the new model
+                        log.warning("HST model and ROCAUC metric reset after drift detection.")
 
                     # ── ROCAUC update ─────────────────────────────────────
                     if has_labels and rocauc is not None:
@@ -226,6 +281,7 @@ def run(args):
                         "write_latency_ms": None,
                         "processing_latency_ms": None,
                         "e2e_latency_ms": e2e_ms,
+                        "drift_detected": drift_detected,
                         "_t_consume": t_consume,
                     }
 
@@ -244,6 +300,7 @@ def run(args):
                             f"[{processed}] consumed stream='{msg['stream_id']}' "
                             f"value={msg['value']:.4f} score={anomaly_score:.4f} "
                             f"anomaly={result['is_anomaly']} "
+                            f"drift={drift_detected} total_drifts={drift_count} "
                             f"proc={result['processing_latency_ms']:.2f}ms "
                             f"e2e={e2e_ms:.1f}ms"
                             + (f" rocauc={running_rocauc:.4f}" if running_rocauc is not None else "")
