@@ -161,6 +161,7 @@ def run(args):
     )
     adwin = ADWIN()
     drift_count = 0
+    model_generation = 0
     rocauc = metrics.ROCAUC() if has_labels else None
     running_rocauc = None
 
@@ -243,7 +244,11 @@ def run(args):
                             "trigger_score": round(anomaly_score, 6),
                             "adwin_window_size": adwin.width,
                             "message_count": processed + 1,
+                            "model_generation_killed": model_generation,
                         }
+                        
+                        model_generation += 1
+                        
                         write_drift_event(r, args.stream_id, drift_event)
                         # Reset model and metric — old distribution no longer valid
                         model = HalfSpaceTrees(
@@ -282,6 +287,7 @@ def run(args):
                         "processing_latency_ms": None,
                         "e2e_latency_ms": e2e_ms,
                         "drift_detected": drift_detected,
+                        "model_generation": model_generation,
                         "_t_consume": t_consume,
                     }
 
