@@ -1,122 +1,68 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
+import { useState, useEffect } from 'react'
+import StatusBar from './components/StatusBar'
+import ScoreChart from './components/ScoreChart'
+import LatencyPanel from './components/LatencyPanel'
+import MetricsPanel from './components/MetricsPanel'
+import DriftTimeline from './components/DriftTimeline'
 import './App.css'
 
-function App() {
-  const [count, setCount] = useState(0)
+const STREAM_ID = 'realAWSCloudwatch/ec2_cpu_utilization_5f5533'
+const API_BASE = 'http://localhost:8000'
+const POLL_INTERVAL = 2000
+
+export default function App() {
+  const [latest, setLatest] = useState<any>(null)
+  const [history, setHistory] = useState<any[]>([])
+  const [driftEvents, setDriftEvents] = useState<any[]>([])
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    const fetchAll = async () => {
+      try {
+        const base = `${API_BASE}/stream/${STREAM_ID}`
+        const [latestRes, historyRes, driftRes] = await Promise.all([
+          fetch(`${base}/latest`),
+          fetch(`${base}/history`),
+          fetch(`${base}/drift`),
+        ])
+        if (!latestRes.ok) throw new Error(`/latest returned ${latestRes.status}`)
+        const [latestData, historyData, driftData] = await Promise.all([
+          latestRes.json(),
+          historyRes.json(),
+          driftRes.json(),
+        ])
+        setLatest(latestData)
+        setHistory(historyData.results ?? [])
+        setDriftEvents(driftData.events ?? [])
+        setError(null)
+      } catch (e: any) {
+        setError(e.message)
+      }
+    }
+
+    fetchAll()
+    const id = setInterval(fetchAll, POLL_INTERVAL)
+    return () => clearInterval(id)
+  }, [])
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
+    <div className="app">
+      <StatusBar latest={latest} driftEvents={driftEvents} />
+      {error && (
+        <div className="error-banner mono">
+          ⚠ {error} — Is the backend running? (uvicorn app.main:app --reload)
         </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
+      )}
+      <div className="dashboard">
+        <div className="dashboard__main">
+          <ScoreChart history={history} driftEvents={driftEvents} />
         </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
-
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
+        <div className="dashboard__side">
+          <MetricsPanel latest={latest} history={history} />
+          <LatencyPanel history={history} />
+          <DriftTimeline driftEvents={driftEvents} />
         </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+      </div>
+    </div>
   )
 }
-
-export default App
